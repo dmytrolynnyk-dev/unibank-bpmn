@@ -1,0 +1,24 @@
+# Lake project manifest — UNVERIFIED, drafted without a local Lean/Lake toolchain.
+# `lake update` has never been run against this file; there is no lake-manifest.json
+# yet. Whoever picks this up needs to run `lake update` (network access to the
+# mathlib4 repo required) to generate it before `lake build` will work.
+
+name = "unibank_bpm_lean"
+defaultTargets = ["AsanIdentityGate"]
+
+# Only needed because AsanIdentityGate.lean uses the `push_neg` tactic
+# (Mathlib.Tactic.PushNeg). If that proof gets rewritten without it, this
+# dependency — and the toolchain-version coupling it brings — can be dropped.
+[[require]]
+name = "mathlib"
+git = "https://github.com/leanprover-community/mathlib4"
+
+[[lean_lib]]
+name = "AsanIdentityGate"
+
+# The executable Git Call actually invokes: compiles Main.lean, which reads
+# a task's data from stdin, calls AsanIdentityGate.reachesApprovalDecide, and
+# writes the JSON-RPC reply to stdout. See Main.lean and Dockerfile.
+[[lean_exe]]
+name = "asan_identity_gate"
+root = "Main"
