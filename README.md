@@ -1,9 +1,13 @@
 # ASAN Identity Gate — Lean proof + Git Call skeleton
 
-STATUS: draft, unverified. Nothing in this folder has been run through a real
-Lean/Lake toolchain, Docker, or Corezoid. No git repo, no pushed image, no
-Corezoid node exists yet. This documents what's here and what it would take
-to make it real.
+STATUS: the Lean proofs, the compiled binary's behavior, and the HTTP-bridge
+mechanism have been verified locally (elan/lake toolchain install, `lake
+build`, direct stdin/stdout calls, and calls through `server.py` over real
+HTTP — see `Files` below for what changed as a result). **Not yet verified**:
+building the actual `Dockerfile` inside a container (no Docker available in
+the environment this was checked from) and Corezoid's real request/response
+field names for a custom-Dockerfile Git Call node (see `What's still open`).
+No Corezoid node exists yet.
 
 ## The question this answers
 
@@ -51,11 +55,12 @@ decision for whoever owns this control, not something this file resolves.
 
 | File | Role |
 |---|---|
-| `AsanIdentityGate.lean` | The proof. Defines `CheckOutcome` (Verified/Unverified), models today's graph and a hypothetical fixed graph as `reachesApproval`, proves today's is unsafe (Theorem 1) and the fix is sufficient (Theorem 2). Also defines `reachesApprovalDecide` — a `Bool`-valued, actually-executable twin of `reachesApproval` (which is `Prop`-valued and has no runtime value) — and proves the two agree (Theorem 3). `reachesApprovalDecide` is the only thing here that could ever be *called*; the theorems are compile-time certificates, not runtime functions. |
-| `Main.lean` | The would-be Git Call entrypoint. Reads one JSON-RPC request from stdin, calls `reachesApprovalDecide`, writes a JSON-RPC reply to stdout. The exact request/response field names are a reasonable guess at standard JSON-RPC 2.0, **not confirmed** against Corezoid's actual Git Call contract. |
-| `Dockerfile` | Builds a custom image: installs elan (Lean's toolchain manager), runs `lake update && lake build`, sets the compiled `asan_identity_gate` binary as `ENTRYPOINT`. Needed because Lean is not one of Git Call's natively supported languages (JS/Go/Python/Java/PHP/Clojure/Lisp/Prolog). |
-| `lakefile.toml` | Lake project manifest. Declares the mathlib4 dependency (needed only for the `push_neg` tactic in Theorem 1 — could be dropped if that proof were rewritten without it) and the `asan_identity_gate` executable target. |
-| `lean-toolchain` | Pins the exact Lean 4 version elan should install. |
+| `AsanIdentityGate.lean` | The proof. Defines `CheckOutcome` (Verified/Unverified), models today's graph and a hypothetical fixed graph as `reachesApproval`, proves today's is unsafe (Theorem 1) and the fix is sufficient (Theorem 2). Also defines `reachesApprovalDecide` — a `Bool`-valued, actually-executable twin of `reachesApproval` (which is `Prop`-valued and has no runtime value) — and proves the two agree (Theorem 3). `reachesApprovalDecide` is the only thing here that could ever be *called*; the theorems are compile-time certificates, not runtime functions. **Rewritten to drop the mathlib4 dependency**: Theorem 1 no longer uses `push_neg` (replaced with `cases`/`exact` on the `Or` witness), Theorem 2 is `exact h` (holds by definitional unfolding), Theorem 3 uses core `simp` instead of `simpa`. All three compile and check under a plain Lean 4 toolchain — verified locally. |
+| `Main.lean` | The Git Call entrypoint's JSON-RPC logic. Reads one JSON-RPC request from stdin, calls `reachesApprovalDecide`, writes a JSON-RPC reply to stdout — **verified locally**, including the malformed-input error path. The exact request/response field names are still a reasonable guess at standard JSON-RPC 2.0, **not confirmed** against Corezoid's actual Git Call payload shape. |
+| `server.py` | HTTP bridge added because Git Call's actual contract for a custom Dockerfile is an HTTP server on `$GIT_CALL_PORT` handling JSON-RPC 2.0 POSTs — the original one-shot stdin/stdout `ENTRYPOINT` never satisfied that. Forwards each POST body to `asan_identity_gate` as a subprocess call and returns its stdout line as the response. **Verified locally** end-to-end over real HTTP. |
+| `Dockerfile` | Builds a custom image: installs elan, runs `lake build` (no `lake update` needed — zero external requires now), then runs `server.py` as `ENTRYPOINT` instead of the binary directly. Needed because Lean is not one of Git Call's natively supported languages (JS/Go/Python/Java/PHP/Clojure/Lisp/Prolog). The toolchain/build steps were verified outside a container (same lean-toolchain version, same lakefile); **the literal `docker build` of this file has not been run** (no Docker available in the environment this was checked from). |
+| `lakefile.toml` | Lake project manifest. **mathlib4 dependency dropped** — the proofs were rewritten to need only core Lean 4 tactics. Declares just the `asan_identity_gate` executable target; no `[[require]]` entries. |
+| `lean-toolchain` | Pins the exact Lean 4 version elan should install — confirmed to install and build cleanly (elan 4.2.3, lean4 v4.11.0). |
 
 ## How this would connect to Corezoid (if built out)
 
@@ -85,14 +90,17 @@ decision for whoever owns this control, not something this file resolves.
   design time — it told us the gate is missing and exactly what condition to
   add — not necessarily as a live Git Call at runtime. Worth revisiting if
   the gate's logic grows past a simple OR.
-- **Git Call's real contract** — `Main.lean`'s request/response shape and
-  whether the container runs once per call or stays warm need confirming
-  against a working example, ideally the AntiFraud/RTP track's existing Lean
-  + Git Call setup.
-- **`lake update`/`lake build` have never been run** — no `lake-manifest.json`
-  exists yet, and the mathlib4 dependency, Lean version, and Lake build
-  output path (`.lake/build/bin/asan_identity_gate` in `Dockerfile`) are all
-  best-effort guesses pending an actual toolchain run.
+- **Git Call's real contract for a custom-Dockerfile node** — the HTTP-on-
+  `$GIT_CALL_PORT` requirement is confirmed from the plugin's Git Call docs,
+  and `server.py` implements it, but the exact JSON-RPC request/response field
+  names Corezoid actually sends have not been confirmed against a live task
+  run. Compare against a working example (e.g. the AntiFraud/RTP track's
+  existing Lean + Git Call setup, if one exists) before trusting `Main.lean`'s
+  field names past "the mechanism works."
+- **The literal `docker build` of `Dockerfile` has not been run** — the
+  toolchain install and `lake build` were verified outside a container
+  (matching Lean version, matching lakefile), but apt package availability
+  and behavior specifically inside `ubuntu:22.04` were not exercised.
 - **Business decision on manual override** — if `asan_task_manual`'s outcome
   should count differently from an automated match, `CheckOutcome` needs a
   third case and the proofs need revisiting.

@@ -1,5 +1,3 @@
-import Mathlib.Tactic.PushNeg
-
 /-
   ASAN identity-check gating — does reaching final approval actually require
   a confirmed identity?
@@ -72,9 +70,10 @@ def safeGate (gated : Bool) : Prop :=
     also failed. `reachesApproval false _ _` is `True` regardless, so nothing
     stops this pair from reaching `ver_end_approve`. -/
 theorem current_graph_unsafe : ¬ safeGate false := by
-  unfold safeGate reachesApproval
-  push_neg
-  exact ⟨.Unverified, .Unverified, trivial, by simp⟩
+  intro h
+  cases h .Unverified .Unverified trivial with
+  | inl heq => cases heq
+  | inr heq => cases heq
 
 /-- THEOREM 2 — a graph with the missing gate added IS safe, and trivially so.
     This is the constructive half: it shows the fix is not exotic tooling,
@@ -84,7 +83,7 @@ theorem current_graph_unsafe : ¬ safeGate false := by
     safety property holds by construction, no separate proof effort needed. -/
 theorem gated_graph_safe : safeGate true := by
   intro fc recheck h
-  simpa [reachesApproval] using h
+  exact h
 
 /-- `reachesApproval` returns `Prop` — it has no runtime value, so nothing can
     call it from outside Lean (a Git Call node included). This is the
@@ -105,7 +104,8 @@ def reachesApprovalDecide (gated : Bool) (fc recheck : CheckOutcome) : Bool :=
     above are about — not a separate, unverified stand-in for it. -/
 theorem reachesApprovalDecide_iff (gated : Bool) (fc recheck : CheckOutcome) :
     reachesApprovalDecide gated fc recheck = true ↔ reachesApproval gated fc recheck := by
-  cases gated <;> cases fc <;> cases recheck <;> simp [reachesApprovalDecide, reachesApproval]
+  cases gated <;> cases fc <;> cases recheck <;>
+    simp [reachesApprovalDecide, reachesApproval]
 
 /-
   WHAT THIS FILE DELIBERATELY DOES NOT DO:
