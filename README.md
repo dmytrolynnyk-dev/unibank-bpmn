@@ -3,11 +3,20 @@
 STATUS: the Lean proofs, the compiled binary's behavior, and the HTTP-bridge
 mechanism have been verified locally (elan/lake toolchain install, `lake
 build`, direct stdin/stdout calls, and calls through `server.py` over real
-HTTP — see `Files` below for what changed as a result). **Not yet verified**:
-building the actual `Dockerfile` inside a container (no Docker available in
-the environment this was checked from) and Corezoid's real request/response
-field names for a custom-Dockerfile Git Call node (see `What's still open`).
-No Corezoid node exists yet.
+HTTP — see `Files` below for what changed as a result).
+
+**The custom-Dockerfile deployment path is not usable**: Corezoid's `git_call`
+node schema (enforced by `push-process`'s local JSON-schema validation,
+`json-schema/logics/api_git.json`) restricts `lang` to `js`/`python`/`golang`
+— there is no `dockerfile` option, and the push is rejected locally before it
+ever reaches Corezoid. Running the compiled Lean binary live inside a Git Call
+node is therefore not achievable through this tool, regardless of how correct
+`Dockerfile`/`server.py` are. **`usercode.py` is what's actually wired into
+Corezoid** — a direct, hand-verified port of `reachesApprovalDecide` in a
+language `git_call` natively supports, with no Dockerfile or toolchain
+involved; Corezoid's own build service compiles it. `Dockerfile` and
+`server.py` are kept for reference (verified to work in principle) in case
+this plugin gains custom-Dockerfile support later.
 
 ## The question this answers
 
@@ -61,46 +70,52 @@ decision for whoever owns this control, not something this file resolves.
 | `Dockerfile` | Builds a custom image: installs elan, runs `lake build` (no `lake update` needed — zero external requires now), then runs `server.py` as `ENTRYPOINT` instead of the binary directly. Needed because Lean is not one of Git Call's natively supported languages (JS/Go/Python/Java/PHP/Clojure/Lisp/Prolog). The toolchain/build steps were verified outside a container (same lean-toolchain version, same lakefile); **the literal `docker build` of this file has not been run** (no Docker available in the environment this was checked from). |
 | `lakefile.toml` | Lake project manifest. **mathlib4 dependency dropped** — the proofs were rewritten to need only core Lean 4 tactics. Declares just the `asan_identity_gate` executable target; no `[[require]]` entries. |
 | `lean-toolchain` | Pins the exact Lean 4 version elan should install — confirmed to install and build cleanly (elan 4.2.3, lean4 v4.11.0). |
+| `usercode.py` | **The actual Git Call entrypoint**, `lang: python`. A direct port of `reachesApprovalDecide` — same four-line logic, same four cases plus the malformed-input rejection, checked line-by-line against the compiled Lean binary's output. This file, not `Main.lean`/`Dockerfile`, is what process 407's `git_call` node runs. |
 
-## How this would connect to Corezoid (if built out)
+## How this connects to Corezoid
 
-1. This folder gets pushed to a git repository. That repo — not any Corezoid
-   node — is the source of truth for the logic.
-2. CI runs `lake build` on every push. If a theorem stops holding, the build
-   fails and nothing gets published — this is the actual enforcement
-   mechanism, not something checked per call.
-3. A Corezoid **Git Call** node is configured to point at that repo (URL +
-   branch/ref) using the custom-Dockerfile mode. The node's own configuration
-   only holds this pointer plus field-mapping/timeout settings — none of the
-   code above lives inside the node itself.
-4. If the repo is private, Git Call's fixed outbound IPs
+1. This repo is the source of truth for the logic — `AsanIdentityGate.lean`
+   for *why* it's correct, `usercode.py` for what actually runs.
+2. A Corezoid **Git Call** node in process 407 points at this repo
+   (`repo`/`commit`/`script` fields: `main`, `usercode.py`), `lang: python`.
+   Corezoid's own build service compiles it — no Dockerfile, no toolchain
+   install, no mathlib.
+3. If the repo is private, Git Call's fixed outbound IPs
    (`54.171.15.37`, `108.128.68.222`, `63.33.226.230`) need whitelisting on
-   the git host.
-5. At runtime, the node calls the container's `handle(data)`, which runs
-   `reachesApprovalDecide` — the proven-equivalent, compiled function — and
-   returns its result as the task's reply.
+   the git host. (This repo is public, so it doesn't apply here.)
+4. At runtime, the node calls `handle(data)` in `usercode.py`, which mirrors
+   `reachesApprovalDecide` — the proven-equivalent function in the Lean file
+   — and returns its result as the task's reply.
+5. Keeping `usercode.py` in sync with `AsanIdentityGate.lean` by hand (not by
+   a build step) is the actual weak point of this design: nothing currently
+   *enforces* that they stay equal the way Theorem 3 enforces
+   `reachesApprovalDecide` against `reachesApproval` inside Lean itself. If
+   this gate's logic ever grows past a one-line boolean OR, that gap is worth
+   closing (e.g. a CI check that fails if the two diverge on a shared table
+   of test cases).
 
 ## What's still open
 
 - **Proportionality**: `reachesApprovalDecide`'s actual logic is a single
   boolean OR (`fc = Verified ∨ recheck = Verified`) — the same complexity
-  class as a native Corezoid Condition node. Running it through Git Call
-  (container build/warm-up, external git dependency, IP whitelisting) is
-  heavy machinery for a one-line check. This proof's real payoff so far is at
-  design time — it told us the gate is missing and exactly what condition to
-  add — not necessarily as a live Git Call at runtime. Worth revisiting if
-  the gate's logic grows past a simple OR.
-- **Git Call's real contract for a custom-Dockerfile node** — the HTTP-on-
-  `$GIT_CALL_PORT` requirement is confirmed from the plugin's Git Call docs,
-  and `server.py` implements it, but the exact JSON-RPC request/response field
-  names Corezoid actually sends have not been confirmed against a live task
-  run. Compare against a working example (e.g. the AntiFraud/RTP track's
-  existing Lean + Git Call setup, if one exists) before trusting `Main.lean`'s
-  field names past "the mechanism works."
-- **The literal `docker build` of `Dockerfile` has not been run** — the
-  toolchain install and `lake build` were verified outside a container
-  (matching Lean version, matching lakefile), but apt package availability
-  and behavior specifically inside `ubuntu:22.04` were not exercised.
+  class as a native Corezoid Condition node (`go_if_const`). Running it
+  through Git Call at all — even the working `lang: python` path — is
+  arguably heavier machinery than this one-line check needs. This proof's
+  real payoff so far is at design time — it told us the gate is missing and
+  exactly what condition to add. Worth revisiting Git Call vs. a plain
+  Condition node if the gate's logic stays this simple.
+- **`usercode.py` / `AsanIdentityGate.lean` sync is manual** — see point 5
+  above. Nothing currently fails a build if someone edits one without the
+  other.
+- **The custom-Dockerfile path (`Dockerfile`, `server.py`) is verified but
+  parked** — confirmed working locally (Lean toolchain install, `lake build`
+  without mathlib, the compiled binary's behavior, and the HTTP bridge over
+  real HTTP calls), but not deployable through this plugin's `push-process`
+  (schema hard-restricts `git_call`'s `lang` to js/python/golang). Kept for
+  reference in case that restriction is lifted later. The literal
+  `docker build` of `Dockerfile` itself has still not been run (no Docker in
+  the environment this was checked from) — only the equivalent steps outside
+  a container.
 - **Business decision on manual override** — if `asan_task_manual`'s outcome
   should count differently from an automated match, `CheckOutcome` needs a
   third case and the proofs need revisiting.
